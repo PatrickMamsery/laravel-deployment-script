@@ -3,6 +3,14 @@
 # Welcome message
 echo "Welcome to the Laravel deployment script."
 
+# Ask for the project directory path or use a fallback path
+read -p "Enter the absolute path to the project directory (or press Enter to use the default path '/var/www'): " PROJECT_PATH
+
+# Use the fallback path if the user doesn't provide one
+if [ -z "$PROJECT_PATH" ]; then
+    PROJECT_PATH="/var/www"
+fi
+
 # Ask for the SSH URL of the GitHub repository
 read -p "Enter the SSH URL of your GitHub repository: " REPO_URL
 
@@ -71,11 +79,11 @@ ssh $SSH_USER@$SERVER_IP << EOF
     # Check if Composer is installed
     if ! which composer > /dev/null 2>&1; then
         # Install Composer locally within the project folder
-        cd /var/www
+        cd $PROJECT_PATH
         git clone https://github.com/composer/getcomposer.org.git
         cd getcomposer.org
         php getcomposer.org
-        mv composer.phar /var/www/$REPO_NAME/composer.phar
+        mv composer.phar $PROJECT_PATH/$REPO_NAME/composer.phar
         cd ..
         rm -rf getcomposer.org
     fi
@@ -83,12 +91,12 @@ EOF
 
 # Clone the GitHub repository
 echo "Cloning the GitHub repository..."
-ssh $SSH_USER@$SERVER_IP "git clone $REPO_URL /var/www/$REPO_NAME"
+ssh $SSH_USER@$SERVER_IP "git clone $REPO_URL $PROJECT_PATH/$REPO_NAME"
 
 # Create a .env file
 echo "Creating .env file..."
 ssh $SSH_USER@$SERVER_IP << EOF
-    cd /var/www/$REPO_NAME
+    cd $PROJECT_PATH/$REPO_NAME
     cp .env.example .env
 
     # Set the Laravel environment
@@ -129,7 +137,7 @@ fi
 # Run composer install/update
 echo "Running composer install or update..."
 ssh $SSH_USER@$SERVER_IP << EOF
-    cd /var/www/$REPO_NAME
+    cd $PROJECT_PATH/$REPO_NAME
 
     if [ -f composer.phar ]; then
         # Use locally installed Composer
@@ -140,8 +148,8 @@ ssh $SSH_USER@$SERVER_IP << EOF
     fi
 
     # Set permissions for Laravel storage and cache directories
-    sudo chown -R www-data:www-data /var/www/$REPO_NAME/storage
-    sudo chown -R www-data:www-data /var/www/$REPO_NAME/bootstrap/cache
+    sudo chown -R www-data:www-data $PROJECT_PATH/$REPO_NAME/storage
+    sudo chown -R www-data:www-data $PROJECT_PATH/$REPO_NAME/bootstrap/cache
 
     # Populate the .env file with database credentials
     sed -i "s/DB_DATABASE=.*/DB_DATABASE=$DB_NAME/" .env
@@ -169,7 +177,7 @@ read -p "Do you want to run migrations and seeders? (y/n): " RUN_MIGRATIONS
 if [ "$RUN_MIGRATIONS" = "y" ] || [ "$RUN_MIGRATIONS" = "Y" ]; then
     echo "Running migrations and seeders..."
     ssh $SSH_USER@$SERVER_IP << EOF
-        cd /var/www/$REPO_NAME
+        cd $PROJECT_PATH/$REPO_NAME
         php artisan migrate --seed
 EOF
 fi
@@ -184,7 +192,7 @@ nginx_config="/etc/nginx/sites-available/$REPO_NAME"
 nginx_config_content=$(cat <<EOF
 server {
     server_name $DOMAIN_NAME;
-    root /var/www/$REPO_NAME/public;
+    root $PROJECT_PATH/$REPO_NAME/public;
 
     index index.php index.html index.htm ;
 

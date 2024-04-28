@@ -25,26 +25,19 @@ read -p "Enter the SSH username: " SSH_USER
 read -p "Enter the Laravel environment (e.g., local, production, development): " APP_ENV
 read -p "Enter the Laravel app key (leave empty to generate a new one): " APP_KEY
 
+# Ask for the desired PHP version
+read -p "Enter the desired PHP version (e.g., 7.4, 8.0): " PHP_VERSION
+
 # Ask if a MySQL database should be created
 read -p "Do you want to create a MySQL database on the server? (y/n): " CREATE_DB
 
-# if [ "$CREATE_DB" = "y" ] || [ "$CREATE_DB" = "Y" ]; then
-#     # Ask for the MySQL database name
-#     read -p "Enter the MySQL database name: " DB_NAME
-
-#     # Create the MySQL database
-#     # mysql -u root -p$DB_ROOT_PASSWORD -e "CREATE DATABASE $DB_NAME;"
-
-#     # Ask if a new MySQL user should be created
-#     read -p "Do you want to create a new MySQL user for the application? (y/n): " CREATE_DB_USER
-
-#     if [ "$CREATE_DB_USER" = "y" ] || [ "$CREATE_DB_USER" = "Y" ]; then
-#         # Ask for the MySQL user name and password
-#         read -p "Enter the MySQL user name: " DB_USER
-#         read -s -p "Enter the MySQL user password: " DB_USER_PASSWORD
-#         echo # Newline for clarity
-#     fi
-# fi
+# Check for PHP version format and set the PHP package name accordingly
+if [[ "$PHP_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    PHP_PACKAGE="php$PHP_VERSION"
+else
+    echo "Invalid PHP version format. Exiting."
+    exit 1
+fi
 
 # Install required packages
 echo "Checking for required packages..."
@@ -208,7 +201,7 @@ server {
     error_page 404 /index.php;
 
     location ~ \.php$ {
-        fastcgi_pass unix:/var/run/php/php7.4-fpm.sock; # Adjust for your PHP version
+        fastcgi_pass unix:/var/run/php/php$PHP_VERSION-fpm.sock; # Adjust for your PHP version
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;

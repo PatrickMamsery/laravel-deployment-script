@@ -2,8 +2,8 @@
 
 # Laravel Deployment Script
 # Author: Patrick Mamsery
-# Version: 1.0.0
-# Description: This script automates the deployment of Laravel applications to a server.
+# Version: 1.0.1
+# Description: This script automates the deployment of Laravel applications to a server, supporting both Apache and Nginx.
 
 # Color codes for pretty output
 RED='\033[0;31m'
@@ -50,7 +50,7 @@ echo -e "${GREEN}=================================${NC}"
 echo -e "${GREEN}   Laravel Deployment Script     ${NC}"
 echo -e "${GREEN}=================================${NC}"
 echo -e "Author: Patrick Mamsery"
-echo -e "Version: 1.0.0\n"
+echo -e "Version: 1.1.0\n"
 echo -e "This script will guide you through the process of deploying a Laravel application to your server."
 echo -e "Please make sure you have the necessary information ready before proceeding.\n"
 echo -e "If you find this script helpful, please consider starring the GitHub repository!"
@@ -89,6 +89,16 @@ read -p "Enter the Laravel app key (leave empty to generate a new one): " APP_KE
 # Ask for the desired PHP version
 read -p "Enter the desired PHP version (e.g., 7.4, 8.0): " PHP_VERSION
 
+# Ask for the web server type
+read -p "Enter the web server type (apache/nginx): " WEB_SERVER
+WEB_SERVER=$(echo "$WEB_SERVER" | tr '[:upper:]' '[:lower:]')
+
+# Validate web server input
+if [[ "$WEB_SERVER" != "apache" && "$WEB_SERVER" != "nginx" ]]; then
+    error "Invalid web server type. Please choose either 'apache' or 'nginx'. Exiting."
+    exit 1
+fi
+
 # Ask if a MySQL database should be created
 if ask_yes_no "Do you want to create a MySQL database on the server?"; then
     CREATE_DB="y"
@@ -107,26 +117,19 @@ fi
 # Install required packages
 progress "Checking for required packages..."
 ssh $SSH_USER@$SERVER_IP << EOF
-    if ! dpkg -l | grep -q "nginx"; then
-        sudo apt-get update
-        sudo apt-get -y upgrade
+    sudo apt-get update
+    sudo apt-get -y upgrade
+    
+    if [ "$WEB_SERVER" = "nginx" ]; then
         sudo apt-get -y install nginx
+    elif [ "$WEB_SERVER" = "apache" ]; then
+        sudo apt-get -y install apache2
     fi
 
-    if ! dpkg -l | grep -q "git"; then
-        sudo apt-get -y install git
-    fi
-
-    if ! dpkg -l | grep -q "curl"; then
-        sudo apt-get -y install curl
-    fi
-
-    if ! dpkg -l | grep -q "unzip"; then
-        sudo apt-get -y install unzip
-    fi
+    sudo apt-get -y install git curl unzip
 
     # Check and install PHP and required extensions
-    php_packages=("php-fpm" "php-mysql" "php-cli" "php-common" "php-zip" "php-mbstring" "php-xml" "php-json" "php-curl" "php-gd" "php-imagick" "php-bcmath" "php-pdo" "php-tokenizer" "php-json")
+    php_packages=("$PHP_PACKAGE-fpm" "$PHP_PACKAGE-mysql" "$PHP_PACKAGE-cli" "$PHP_PACKAGE-common" "$PHP_PACKAGE-zip" "$PHP_PACKAGE-mbstring" "$PHP_PACKAGE-xml" "$PHP_PACKAGE-json" "$PHP_PACKAGE-curl" "$PHP_PACKAGE-gd" "$PHP_PACKAGE-imagick" "$PHP_PACKAGE-bcmath" "$PHP_PACKAGE-pdo" "$PHP_PACKAGE-tokenizer")
 
     for package in "${php_packages[@]}"; do
         if ! dpkg -l | grep -q "$package"; then
@@ -138,12 +141,9 @@ ssh $SSH_USER@$SERVER_IP << EOF
     if ! which composer > /dev/null 2>&1; then
         # Install Composer locally within the project folder
         cd $PROJECT_PATH
-        git clone https://github.com/composer/getcomposer.org.git
-        cd getcomposer.org
-        php getcomposer.org
-        mv composer.phar $PROJECT_PATH/$REPO_NAME/composer.phar
-        cd ..
-        rm -rf getcomposer.org
+        curl -sS https://getcomposer.org/installer | php
+        sudo mv composer.phar /usr/local/bin/composer
+        sudo chmod +x /usr/local/bin/composer
     fi
 EOF
 
@@ -199,14 +199,7 @@ fi
 progress "Running composer install or update..."
 ssh $SSH_USER@$SERVER_IP << EOF
     cd $PROJECT_PATH/$REPO_NAME
-
-    if [ -f composer.phar ]; then
-        # Use locally installed Composer
-        php composer.phar install --optimize-autoloader --no-dev
-    else
-        # Use globally installed Composer
-        composer install --optimize-autoloader --no-dev
-    fi
+    composer install --optimize-autoloader --no-dev
 
     # Set permissions for Laravel storage and cache directories
     sudo chown -R www-data:www-data $PROJECT_PATH/$REPO_NAME/storage
@@ -243,19 +236,19 @@ EOF
     success "Migrations and seeders executed successfully."
 fi
 
-# Create Nginx server block configuration on the server
+# Create web server configuration on the server
 read -p "Enter the domain name for the site (e.g., example.com): " DOMAIN_NAME
 
-progress "Creating Nginx server block configuration on the server..."
-nginx_config="/etc/nginx/sites-available/$REPO_NAME"
+progress "Creating $WEB_SERVER configuration on the server..."
 
-# Define the Nginx server block configuration using a here document
-nginx_config_content=$(cat <<EOF
+if [ "$WEB_SERVER" = "nginx" ]; then
+    config_file="/etc/nginx/sites-available/$REPO_NAME"
+    config_content=$(cat <<EOF
 server {
     server_name $DOMAIN_NAME;
     root $PROJECT_PATH/$REPO_NAME/public;
 
-    index index.php index.html index.htm ;
+    index index.php index.html index.htm;
 
     charset utf-8;
 
@@ -269,7 +262,7 @@ server {
     error_page 404 /index.php;
 
     location ~ \.php$ {
-        fastcgi_pass unix:/var/run/php/php$PHP_VERSION-fpm.sock; # Adjust for your PHP version
+        fastcgi_pass unix:/var/run/php/php$PHP_VERSION-fpm.sock;
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;
@@ -281,23 +274,53 @@ server {
 }
 EOF
 )
+    ssh $SSH_USER@$SERVER_IP << EOF
+        echo '$config_content' | sudo tee '$config_file'
+        sudo ln -s '$config_file' /etc/nginx/sites-enabled/
+        sudo nginx -t && sudo systemctl reload nginx
+EOF
+elif [ "$WEB_SERVER" = "apache" ]; then
+    config_file="/etc/apache2/sites-available/$REPO_NAME.conf"
+    config_content=$(cat <<EOF
+<VirtualHost *:80>
+    ServerName $DOMAIN_NAME
+    ServerAdmin webmaster@localhost
+    DocumentRoot $PROJECT_PATH/$REPO_NAME/public
 
-# Create the Nginx server block configuration file on the server
-ssh $SSH_USER@$SERVER_IP "echo '$nginx_config_content' | sudo tee '$nginx_config'"
+    <Directory $PROJECT_PATH/$REPO_NAME/public>
+        Options Indexes FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
 
-# Create a symbolic link to enable the site on the server
-ssh $SSH_USER@$SERVER_IP "sudo ln -s '$nginx_config' /etc/nginx/sites-enabled/"
+    ErrorLog \${APACHE_LOG_DIR}/$REPO_NAME-error.log
+    CustomLog \${APACHE_LOG_DIR}/$REPO_NAME-access.log combined
+</VirtualHost>
+EOF
+)
+    ssh $SSH_USER@$SERVER_IP << EOF
+        echo '$config_content' | sudo tee '$config_file'
+        sudo a2ensite $REPO_NAME.conf
+        sudo a2enmod rewrite
+        sudo apache2ctl configtest && sudo systemctl reload apache2
+EOF
+fi
 
-# Test Nginx configuration and reload on the server
-ssh $SSH_USER@$SERVER_IP "sudo nginx -t"
-ssh $SSH_USER@$SERVER_IP "sudo systemctl reload nginx"
-success "Nginx server block configuration created and applied."
+success "$WEB_SERVER configuration created and applied."
 
 # Optionally create a Let's Encrypt SSL certificate
 if ask_yes_no "Do you want to create a Let's Encrypt SSL certificate?"; then
     progress "Creating a Let's Encrypt SSL certificate..."
     ssh $SSH_USER@$SERVER_IP << EOF
-        sudo certbot -d $DOMAIN_NAME
+        sudo apt-get update
+        sudo apt-get install -y certbot
+        if [ "$WEB_SERVER" = "nginx" ]; then
+            sudo apt-get install -y python3-certbot-nginx
+            sudo certbot --nginx -d $DOMAIN_NAME
+        elif [ "$WEB_SERVER" = "apache" ]; then
+            sudo apt-get install -y python3-certbot-apache
+            sudo certbot --apache -d $DOMAIN_NAME
+        fi
 EOF
     success "Let's Encrypt SSL certificate created and installed."
 fi
